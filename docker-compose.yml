@@ -1,0 +1,46 @@
+version: "3.9"
+
+networks:
+  sak-network:
+    driver: bridge
+
+services:
+
+  # ---------- MySQL ----------
+  sak-mysql:
+    image: mysql:8.3
+    container_name: sak-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: 1234
+      MYSQL_DATABASE: yamaha
+    ports:
+      - "3306:3306"   # Updated as requested
+    volumes:
+      - sak-mysql-volume:/var/lib/mysql
+    networks:
+      - sak-network
+
+  # ---------- Spring Boot App ----------
+  sak-yamaha-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sak-yamaha-app
+    restart: always
+    depends_on:
+      - sak-mysql
+    environment:
+      APP_NAME: "yamaha"
+      DB_URL: "jdbc:mysql://sak-mysql:3306/yamaha?createDatabaseIfNotExist=true"
+      DB_USERNAME: "root"
+      DB_PASSWORD: "1234"
+      SERVER_PORT: "8088"
+      JPA_DDL_AUTO: "update"
+    ports:
+      - "8088:8088"
+    networks:
+      - sak-network
+
+volumes:
+  sak-mysql-volume:
