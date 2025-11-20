@@ -6,7 +6,7 @@ pipeline {
     }
 
     environment {
-        IMAGE_NAME = "yourdockerhubusername/devguru-app"
+        IMAGE_NAME = "sareenakashi/devguru-app"
     }
 
     stages {
