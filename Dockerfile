@@ -1,21 +1,10 @@
-# -------- Stage 1: Build the app --------
-FROM maven:3.9.6-eclipse-temurin-21 AS build
+
+FROM eclipse-temurin:17-jdk-alpine
 WORKDIR /app
-
-COPY pom.xml .
-COPY src ./src
-
-RUN mvn clean package -DskipTests
-
-# -------- Stage 2: Runtime Image --------
-FROM eclipse-temurin:21-jdk
-WORKDIR /app
-
-# Copy the JAR from build stage
-COPY --from=build /app/target/*.jar app.jar
-
-# Expose internal port
+COPY target/spring_app_sak-0.0.1-SNAPSHOT.jar app.jar
 EXPOSE 8088
-
-# Run Spring Boot app
+ENV SPRING_DATASOURCE_URL=jdbc:mysql://mysql-container:3306/myapplication?createDatabaseIfNotExist=true
+ENV SPRING_DATASOURCE_USERNAME=root
+ENV SPRING_DATASOURCE_PASSWORD=1234
+ENV SERVER_PORT=8088
 ENTRYPOINT ["java", "-jar", "app.jar"]
