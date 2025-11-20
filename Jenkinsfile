@@ -1,204 +1,183 @@
 pipeline {
-
     agent any
 
-    /******************************
-     * GLOBAL ENVIRONMENT VARIABLES
-     ******************************/
-    environment {
-        KUBECONFIG_PATH = "/var/lib/jenkins/kubeconfig.yml"
-        REGISTRY = "docker.io"
-        IMAGE_NAME = "sak/yamaha"
-        DOCKER_CREDS = "dockerhub-credentials"
+    tools {
+        maven 'maven'
     }
 
-    /******************************
-     * PIPELINE PARAMETERS
-     ******************************/
     parameters {
-        choice(
-            name: 'ENV',
-            choices: ['dev', 'pre_prod', 'prod'],
-            description: 'Select deployment environment'
-        )
+        choice(name: 'DEPLOY_ENV', choices: ['dev', 'prod'], description: 'Select the deployment environment')
+        choice(name: 'ACTION', choices: ['deploy', 'remove'], description: 'Am selecting for the action')
+    }
 
-        choice(
-            name: 'ACTION',
-            choices: ['deploy', 'destroy'],
-            description: 'Select action type'
-        )
-
-        string(
-            name: 'VERSION',
-            defaultValue: '',
-            description: 'Optional: version tag for application image (used in prod & pre_prod). If empty, BUILD_ID will be used at runtime.'
-        )
+    environment {
+        DOCKERHUB_USERNAME = 'sareenakashi'
+        DOCKER_IMAGE = "${env.JOB_NAME}"
+        DOCKER_COMPOSE_FILE = "docker-compose.yml"
     }
 
     stages {
-
-        /******************************
-         * DEV ENVIRONMENT (Docker Compose)
-         ******************************/
-        stage('DEV - Docker Environment Check') {
-            when { expression { params.ENV == 'dev' } }
-            steps {
-                sh """
-                echo "===== Checking Docker & Docker-Compose ====="
-                docker --version
-                docker-compose --version
-                """
+        stage('To Build the Jar file for DEV'){
+            when {
+                allOf {
+                    expression { params.DEPLOY_ENV == 'dev' }
+                    expression { params.ACTION == 'deploy' }
+                }
+            }
+            steps{
+                sh 'mvn clean package -Dskiptests'
             }
         }
-
-        stage('DEV - Deploy / Destroy') {
-            when { expression { params.ENV == 'dev' } }
+        stage('Deploy Containers to Dev Env') {
+            when {
+                allOf {
+                    expression { params.DEPLOY_ENV == 'dev' }
+                    expression { params.ACTION == 'deploy' }
+                }
+            }
             steps {
-                script {
-                    if (params.ACTION == "deploy") {
-                        sh """
-                        echo "===== DEV Deploy Using Docker Compose ====="
-                        docker-compose down
-                        docker-compose up -d --build
-                        """
-                    } else {
-                        sh """
-                        echo "===== DEV Destroy Using Docker Compose ====="
-                        docker-compose down -v
-                        docker rmi `docker images -q` || true
-                        """
-                    }
+                echo "Deploying Docker containers using Compose..."
+                sh "sudo docker-compose -f ${DOCKER_COMPOSE_FILE} up -d --build"
+            }
+        }
+        stage('Remove Containers from Dev Env') {
+            when {
+                allOf {
+                    expression { params.DEPLOY_ENV == 'dev' }
+                    expression { params.ACTION == 'remove' }
+                }
+            }
+            steps {
+                echo "Stopping and removing containers and volumes..."
+                sh "sudo docker-compose -f ${DOCKER_COMPOSE_FILE} down -v"
+            }
+        }
+        stage('Cleanup Old Images') {
+            when {
+                allOf {
+                    expression { params.DEPLOY_ENV == 'dev' }
+                    expression { params.ACTION == 'remove' }
+                }
+            }
+            steps {
+                echo "Cleaning up old Docker images..."
+                sh "sudo docker image prune -af"
+            }
+        }
+        stage('Remove Jar Build') {
+            when {
+                allOf {
+                    expression { params.DEPLOY_ENV == 'dev' }
+                    expression { params.ACTION == 'remove' }
+                }
+            }
+            steps {
+                echo 'Removing Target Dir from the maven project'
+                sh 'mvn clean'
+            }
+        }
+        // Prodction stages
+        stage('To Build the Jar file for PROD'){
+            when {
+                allOf {
+                    expression { params.DEPLOY_ENV == 'prod' }
+                    expression { params.ACTION == 'deploy' }
+                }
+            }
+            steps{
+                sh 'mvn clean package -Dskiptests'
+            }
+        }
+        stage('Build the Docker images') {
+            when{
+                allOf {
+                    expression { params.DEPLOY_ENV == 'prod' }
+                    expression { params.ACTION == 'deploy' }
+                }        
+            }
+            steps {
+                echo "Build the Docker image....."
+                sh 'sudo docker build -t ${DOCKERHUB_USERNAME}/${DOCKER_IMAGE}:latest .'
+            }
+        }
+        stage('Login to DockerHub') {
+            when {
+                allOf {
+                    expression { params.DEPLOY_ENV == 'prod' }
+                    expression { params.ACTION == 'deploy' }
+                }
+            }
+            steps {
+                echo "Logging in to DockerHub..."
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-cred', usernameVariable: 'DOCKERHUB_USER', passwordVariable: 'DOCKERHUB_PASS')]) {
+                    sh 'echo "$DOCKERHUB_PASS" | sudo docker login -u "$DOCKERHUB_USER" --password-stdin'
                 }
             }
         }
 
-        /******************************
-         * PRE-PRODUCTION (Build + Push)
-         ******************************/
-        stage('PRE_PROD - Build Docker Image') {
-            when { expression { params.ENV == 'pre_prod' && params.ACTION == 'deploy' } }
-            steps {
-                script {
-                    def versionTag = params.VERSION ?: env.BUILD_ID
-                    def latestTag = "latest"
-                    env.IMAGE_TAG = versionTag
-
-                    sh """
-                    echo "===== Building Docker Image ====="
-                    docker build -t ${IMAGE_NAME}:${versionTag} .
-                    docker tag ${IMAGE_NAME}:${versionTag} ${IMAGE_NAME}:${latestTag}
-                    """
+        stage('Push Docker Image to DockerHub') {
+            when {
+                allOf {
+                    expression { params.DEPLOY_ENV == 'prod' }
+                    expression { params.ACTION == 'deploy' }
                 }
             }
-        }
-
-        stage('PRE_PROD - Push to DockerHub') {
-            when { expression { params.ENV == 'pre_prod' && params.ACTION == 'deploy' } }
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: "${DOCKER_CREDS}",
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASS'
-                )]) {
-                    sh """
-                    echo "===== Logging into DockerHub ====="
-                    echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-
-                    echo "===== Pushing Docker Images ====="
-                    docker push ${IMAGE_NAME}:${IMAGE_TAG}
-                    docker push ${IMAGE_NAME}:latest
-
-                    echo "===== Logging Out ====="
-                    docker logout
-                    """
-                }
+                echo "Pushing Docker image to DockerHub..."
+                sh '''
+                    sudo docker push ${DOCKERHUB_USERNAME}/${DOCKER_IMAGE}:latest
+                    sudo docker rmi ${DOCKERHUB_USERNAME}/${DOCKER_IMAGE}:latest || true
+                '''
             }
         }
-
-        stage('PRE_PROD - Cleanup Local Images') {
-            when { expression { params.ENV == 'pre_prod' } }
-            steps {
-                sh """
-                echo "===== Cleaning Local Docker Images ====="
-                docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true
-                docker rmi ${IMAGE_NAME}:latest || true
-                """
-            }
-        }
-
-        /******************************
-         * PRODUCTION (Kubernetes)
-         ******************************/
-        stage('PROD - MySQL Deploy / Destroy') {
-            when { expression { params.ENV == 'prod' && params.ACTION != '' } }
-            steps {
-                script {
-                    if (params.ACTION == "deploy") {
-                        sh """
-                        echo "===== PROD: Deploy MySQL ====="
-                        chmod +x scripts/mysql.sh
-                        ./scripts/mysql.sh deploy
-                        """
-                    } else if (params.ACTION == "destroy") {
-                        sh """
-                        echo "===== PROD: Destroy MySQL ====="
-                        chmod +x scripts/mysql.sh
-                        ./scripts/mysql.sh destroy
-                        """
-                    }
+        stage('DockerHub account logout') {
+            when {
+                allOf {
+                    expression { params.DEPLOY_ENV == 'prod' }
+                    expression { params.ACTION == 'remove' }
                 }
             }
-        }
-
-        stage('PROD - Blue/Green App Deploy') {
-            when { expression { params.ENV == 'prod' && params.ACTION == 'deploy' } }
             steps {
-                script {
-                    if (!params.VERSION?.trim()) {
-                        error("VERSION parameter is required for PROD deployments!")
-                    }
-
-                    def fullImage = "${IMAGE_NAME}:${params.VERSION}"
-
-                    sh """
-                    echo "===== PROD: Blue/Green App Deployment ====="
-                    chmod +x scripts/app.sh
-                    ./scripts/app.sh deploy ${fullImage}
-                    """
-                }
+                echo "Removing Docker cred..."
+                sh '''
+                    sudo docker logout
+                '''
             }
         }
-
-        stage('PROD - Blue/Green Destroy') {
-            when { expression { params.ENV == 'prod' && params.ACTION == 'destroy' } }
-            steps {
-                script {
-                    if (!params.VERSION?.trim()) {
-                        error("VERSION (blue or green) required for destroy!")
-                    }
-
-                    sh """
-                    echo "===== PROD: Destroy Blue/Green Deployment ====="
-                    chmod +x scripts/app.sh
-                    ./scripts/app.sh destroy ${params.VERSION}
-                    """
+        stage('Cleanup Local Docker Images') {
+            when {
+                allOf {
+                    expression { params.DEPLOY_ENV == 'prod' }
+                    expression { params.ACTION == 'remove' }
                 }
+            }
+            steps {
+                echo "Removing local Docker images..."
+                sh '''
+                    sudo docker rmi ${DOCKERHUB_USERNAME}/${DOCKER_IMAGE}:latest || true
+                    sudo docker system prune -af
+                '''
+            }
+        }
+        stage('Remove target after Prod is completed') {
+            when {
+                allOf {
+                    expression { params.DEPLOY_ENV == 'prod' }
+                    expression { params.ACTION == 'remove' }
+                }
+            }
+            steps {
+                echo 'Removing Target Dir from the maven project'
+                sh 'mvn clean'
             }
         }
     }
-
-    /******************************
-     * FINAL POST ACTIONS
-     ******************************/
     post {
-        always {
-            echo "======= Pipeline Completed ======="
-        }
         success {
-            echo "======= SUCCESS ======="
+            echo "project is success"
         }
         failure {
-            echo "======= FAILED ======="
+            echo "project is failure"
         }
     }
 }
