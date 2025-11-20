@@ -14,7 +14,7 @@ pipeline {
         stage('Checkout Code') {
             steps {
                 git branch: 'main',
-                    url: 'https://github.com/your/repo.git'
+                    url: 'https://github.com/srushtimk0318/static_spring_docker_jenkins.git'
             }
         }
 
