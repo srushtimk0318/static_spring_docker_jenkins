@@ -1,152 +1,66 @@
 pipeline {
     agent any
-
     tools {
         maven 'maven'
     }
+
+    environment {
+        IMAGE_NAME = 'spring-app'
+        CONTAINER_NAME = 'spring-app-container'
+        APP_PORT = '8081'
+    }
+
     stages {
-        stage('Build') {
+        stage('Build JAR') {
             steps {
-                echo "Building the project..."
-                sh 'mvn clean package'
-            }
-            post {
-                success {
-                    echo 'Build stage completed successfully.'
-                }
-                failure {
-                    echo 'Build stage failed.'
-                }
+                sh 'mvn clean package -DskipTests'
             }
         }
-        stage('Docker Build the Image') {
+
+        stage('Build Docker Image') {
             steps {
-                echo "Building the Docker image..."
-                sh 'sudo docker build -t devguru-kashi-cicd-docker .'
-            }
-            post {
-                success {
-                    echo 'Docker image built successfully.'
-                }
-                failure {
-                    echo 'Docker image build failed.'
-                }
+                sh "docker build -t ${IMAGE_NAME} ."
             }
         }
-        stage('Docker Login to DockerHub') {
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub-cred-id',  
-                    usernameVariable: 'USER',
-                    passwordVariable: 'PASS'
-                )]) {
-                    sh '''
-                        echo "$PASS" | sudo docker login -u "$USER" --password-stdin
-                    '''
-                }
-            }
-        }
-        stage('Docker Tag the Image') {
-            steps {
-                echo "Tagging the Docker image..."
-                sh 'sudo docker tag devguru-kashi-cicd-docker sareenakashi/devguru-kashi-cicd-docker:latest'
-            }
-            post {
-                success {
-                    echo 'Docker image tagged successfully.'
-                }
-                failure {
-                    echo 'Failed to tag Docker image.'
-                }
-            }
-        }
-        stage('Docker Push the Image') {
-            steps {
-                echo "Pushing the Docker image to DockerHub..."
-                sh 'sudo docker push sareenakashi/devguru-kashi-cicd-docker:latest'
-            }
-            post {
-                success {
-                    echo 'Docker image pushed to DockerHub successfully.'
-                }
-                failure {
-                    echo 'Failed to push Docker image to DockerHub.'
-                }
-            }
-        }
-        stage('Cleanup Local Docker Images') {
-            steps {
-                echo "Cleaning up local Docker images..."
-                sh '''
-                    sudo docker rmi sareenakashi/devguru-kashi-cicd-docker:latest
-                    sudo docker rmi devguru-kashi-cicd-docker
-                '''
-            }
-            post {
-                success {
-                    echo 'Local Docker images cleaned up successfully.'
-                }
-                failure {
-                    echo 'Failed to clean up local Docker images.'
-                }
-            }
-        }
-        stage('Done') {
-            steps {
-                echo "Pipeline execution completed."
-            }
-        }
-        stage('Docker Logout from DockerHub') {
-            steps {
-                echo "Logging out from DockerHub..."
-                sh 'sudo docker logout'
-            }
-        }
-        stage('Docker container run') {
+
+        stage('Run Docker Container If Not Running') {
             steps {
                 script {
-                    echo "🧩 Checking if the Docker container is already running..."
-                    // Check if container exists
-                    def containerExists = sh(
-                        script: "sudo docker ps -a --format '{{.Names}}' | grep -w snapchat-container || true",
-                        returnStdout: true
-                    ).trim()
-                    if (containerExists) {
-                        echo "⚠️ Container 'snapchat-container' already exists."
-                        // Ask user for confirmation
-                        def userChoice = input(
-                            id: 'ContainerRestart',
-                            message: 'Container already running. Do you want to stop and redeploy?',
-                            parameters: [choice(choices: ['Yes', 'No'], description: 'Choose action', name: 'Confirm')]
-                        )
-                        if (userChoice == 'Yes') {
-                            echo "🛑 Stopping and removing old container..."
-                            sh '''
-                                sudo docker stop snapchat-container || true
-                                sudo docker rm snapchat-container || true
-                                echo "🚀 Starting new container..."
-                                sudo docker run -d -p 8084:8080 --name snapchat-container sareenakashi/devguru-kashi-cicd-docker:latest
-                            '''
-                        } else {
-                            echo "⏩ Skipping container restart as per user choice."
-                        }
+                    def isRunning = sh(script: "docker ps -q -f name=${CONTAINER_NAME}", returnStdout: true).trim()
+
+                    if (isRunning) {
+                        echo "🚫 Container '${CONTAINER_NAME}' is already running. Skipping run."
                     } else {
-                        echo "🚀 No existing container found — starting new one..."
-                        sh 'sudo docker run -d -p 8084:8080 --name snapchat-container sareenakashi/devguru-kashi-cicd-docker:latest'
+                        def exists = sh(script: "docker ps -a -q -f name=${CONTAINER_NAME}", returnStdout: true).trim()
+                        if (exists) {
+                            echo "🔁 Container exists but not running. Removing it..."
+                            sh "docker rm ${CONTAINER_NAME}"
+                        }
+
+                        echo "🚀 Starting new Docker container..."
+                        sh "docker run -d --name ${CONTAINER_NAME} -p ${APP_PORT}:8080 ${IMAGE_NAME}"
                     }
                 }
             }
         }
-    }  
-    post {
-        always {
-            echo 'This will always run after the stages are complete.'
+
+        stage('Show Container Status') {
+            steps {
+                echo "📦 Current Docker containers:"
+                sh "docker ps -a --filter name=${CONTAINER_NAME}"
+            }
         }
+    }
+
+    post {
         success {
-            echo 'This will run only if the pipeline succeeds.'
+            echo "✅ Spring Boot container is handled successfully."
         }
         failure {
-            echo 'This will run only if the pipeline fails.'
+            echo "❌ Something went wrong with the deployment."
+        }
+        always {
+            echo "ℹ️ Pipeline finished. Check logs above for final status."
         }
     }
 }
